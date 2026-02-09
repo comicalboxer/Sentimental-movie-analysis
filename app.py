@@ -1,35 +1,36 @@
 from flask import Flask, render_template, request, jsonify
 import pickle
 import numpy as np
-import tensorflow as pd
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.models import load_model
+import nltk
+from nltk.corpus import stopwords
 import os
-import re
 
 # Initialize Flask app
 app = Flask(__name__)
 
 # Load model and vectorizer
-MODEL_PATH = 'sentiment_model.h5'
-TOKENIZER_PATH = 'tokenizer.pickle'
+MODEL_PATH = 'sentiment_model.pkl'
+VECTORIZER_PATH = 'vectorizer.pkl'
 
 model = None
-tokenizer = None
-MAX_LEN = 200
+vectorizer = None
+stop_words = None
 
 def load_resources():
-    global model, tokenizer
+    global model, vectorizer, stop_words
     try:
         if os.path.exists(MODEL_PATH):
-            model = load_model(MODEL_PATH)
-            print("Keras Model loaded.")
+            with open(MODEL_PATH, 'rb') as f:
+                model = pickle.load(f)
+            print("Model loaded.")
         
-        if os.path.exists(TOKENIZER_PATH):
-            with open(TOKENIZER_PATH, 'rb') as f:
-                tokenizer = pickle.load(f)
-            print("Tokenizer loaded.")
+        if os.path.exists(VECTORIZER_PATH):
+            with open(VECTORIZER_PATH, 'rb') as f:
+                vectorizer = pickle.load(f)
+            print("Vectorizer loaded.")
             
+        nltk.download('stopwords')
+        stop_words = set(stopwords.words('english'))
     except Exception as e:
         print(f"Error loading resources: {e}")
 
@@ -46,10 +47,15 @@ def index():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    global model, tokenizer
+    global model, vectorizer
     
-    if not model or not tokenizer:
-        return jsonify({'error': 'Model not loaded. Please train the model first.'}), 503
+    # Lazy loading if not loaded
+    if not model or not vectorizer:
+        print("Model or vectorizer not found, attempting to reload...")
+        load_resources()
+        
+    if not model or not vectorizer:
+        return jsonify({'error': 'Model not loaded. Please check server logs.'}), 503
 
     try:
         data = request.get_json()
@@ -59,19 +65,20 @@ def predict():
             return jsonify({'error': 'No review provided'}), 400
 
         cleaned_input = clean_review(review)
+        vectorised_input = vectorizer.transform([cleaned_input])
         
-        # Tokenize and pad
-        seq = tokenizer.texts_to_sequences([cleaned_input])
-        padded = pad_sequences(seq, maxlen=MAX_LEN)
+        # Scikit-learn prediction
+        prediction_prob = model.predict_proba(vectorised_input)
+        # Class 0: negative, Class 1: positive (usually, checks classes_ attribute)
+        # Assuming alphabetical 'negative', 'positive' -> negative=0, positive=1
         
-        # Prediction
-        prediction_prob = model.predict(padded)[0][0]
+        positive_prob = prediction_prob[0][1]
         
-        sentiment = "Positive" if prediction_prob > 0.5 else "Negative"
+        sentiment = "Positive" if positive_prob > 0.5 else "Negative"
         
         return jsonify({
             'sentiment': sentiment,
-            'score': float(prediction_prob)
+            'score': float(positive_prob)
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
